@@ -1,3 +1,5 @@
 config.py
 env/
 run.sh
+__pycache__
+attachments/
