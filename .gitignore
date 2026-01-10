@@ -3,3 +3,4 @@ env/
 run.sh
 __pycache__
 attachments/
+test.py

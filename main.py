@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 import re
 from config import Config_mail_pass, Config_username, Config_imap_server, Config_bot_token, Config_chat_id
 from time import sleep
-
+import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -100,17 +100,11 @@ print(attachments)
 async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f'Hello {update.effective_user.first_name}')
 
-async def send_custom_text(update: Update, context: ContextTypes.DEFAULT_TYPE, custom_text: str):
-    """
-    Отправляет переданный текст пользователю
-    """
-    chat_id = update.effective_chat.id
-    
+async def send_custom_text(update: Update, context: ContextTypes.DEFAULT_TYPE, custom_text: str):    
     await context.bot.send_message(
-        chat_id=chat_id,
+        chat_id=Config_chat_id,
         text=custom_text
     )
-
 
 # Функция отправки разных типов файлов
 async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,7 +119,52 @@ async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 app = ApplicationBuilder().token(Config_bot_token).build()
 
-app.add_handler(CommandHandler("hello", hello))
-app.add_handler(CommandHandler("sendfile", send_file))
+async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    while True:
+        try:
+            imap.select("INBOX")
+            
+            # Используем правильный формат поиска
+            status, data = imap.search(None, 'UNSEEN')
+            
+            if status != 'OK' or not data[0]:
+                print("Пусто")
+                await asyncio.sleep(30)
+                continue
+            
+            # Декодируем ID писем
+            mail_ids = data[0].decode('utf-8').split()
+            
+            for mail_id in mail_ids:
+                subject, sender, text = get_email_info(imap, mail_id)
+                
+                email_match = re.search(r'<([^>]+)>', sender)
+                if email_match:
+                    clean_sender = email_match.group(1)
+                else:
+                    clean_sender = sender
+                
+                clean_text = re.sub(r'<[^>]+>', '', text)
+                
+                message = f"📧 От: {clean_sender}\n"
+                message += f"📌 Тема: {subject}\n\n"
+                message += f"{clean_text[:500]}"
+                
+                await send_custom_text(update, context, message)
+                
+                # Важно: используем правильный mail_id
+                imap.store(mail_id, '+FLAGS', '\\Seen')
+                print(f"Письмо {mail_id} помечено как прочитанное")
+            
+            await asyncio.sleep(30)
+            
+        except Exception as e:
+            print(f"Ошибка: {e}")
+            await asyncio.sleep(30)
+# В хендлере
+app.add_handler(CommandHandler("process", process_and_send))
+
+#app.add_handler(CommandHandler("hello", hello))
+#app.add_handler(CommandHandler("sendfile", send_file))
 
 app.run_polling()
