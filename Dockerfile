@@ -1,4 +1,4 @@
-FROM python:3.10.19-trixie
+FROM python:3.10-alpine
 WORKDIR /app
 COPY main.py /app/m2.py
 COPY config.py /app/config.py
