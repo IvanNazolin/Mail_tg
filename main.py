@@ -9,6 +9,8 @@ from time import sleep
 import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import os
+import shutil 
 
 mail_pass = Config_mail_pass
 username = Config_username
@@ -67,17 +69,52 @@ async def send_custom_text(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         chat_id=Config_chat_id,
         text=custom_text
     )
-
-async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    # Отправка документа (любого файла)
-    await context.bot.send_document(
-        chat_id=chat_id,
-        document=open('attachments/11Л.pdf', 'rb'),
-        caption="Это документ PDF"
-    )
     
 app = ApplicationBuilder().token(Config_bot_token).build()
+
+def cleanup_attachments_folder(folder_path="attachment/"):
+    deleted_count = 0
+    total_count = 0
+    errors = []
+    
+    try:
+        # Проверяем, существует ли папка
+        if not os.path.exists(folder_path):
+            print(f"Папка {folder_path} не существует")
+            return 0, 0, []
+        
+        # Проходим по всем файлам и подпапкам
+        for filename in os.listdir(folder_path):
+            total_count += 1
+            file_path = os.path.join(folder_path, filename)
+            
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)  # Удаляем файл или ссылку
+                    deleted_count += 1
+                    print(f"Удален файл: {filename}")
+                    
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)  # Рекурсивно удаляем папку
+                    deleted_count += 1
+                    print(f"Удалена папка: {filename}")
+                    
+            except Exception as e:
+                errors.append(f"{filename}: {str(e)}")
+                print(f"Ошибка удаления {filename}: {e}")
+        
+        print(f"Очистка завершена. Удалено {deleted_count} из {total_count} объектов")
+        
+        if errors:
+            print(f"Было {len(errors)} ошибок:")
+            for error in errors:
+                print(f"  - {error}")
+                
+    except Exception as e:
+        print(f"Критическая ошибка при очистке папки {folder_path}: {e}")
+        errors.append(f"Общая ошибка: {str(e)}")
+    
+    #return deleted_count, total_count, errors
 
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     while True:
@@ -124,20 +161,29 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if attachments:
                     for filename, file_data in attachments:
                         try:
-                            # Используем временный файл
-                            temp_path = f"temp_{filename}"
+                            # Создаем папку attachments, если ее нет
+                            attachments_dir = "attachments"
+                            if not os.path.exists(attachments_dir):
+                                os.makedirs(attachments_dir, exist_ok=True)
+                            
+                            # Создаем путь к файлу в папке attachments
+                            safe_filename = re.sub(r'[^\w\.\-]', '_', filename)  # Заменяем небезопасные символы
+                            temp_path = os.path.join(attachments_dir, safe_filename)
+                            
+                            # Сохраняем файл
                             with open(temp_path, 'wb') as f:
                                 f.write(file_data)
                             
+                            # Отправляем файл
                             await context.bot.send_document(
                                 chat_id=Config_chat_id,
                                 document=open(temp_path, 'rb'),
                                 caption=f"Вложение: {filename}"
                             )
                             
-                            # Удаляем временный файл
-                            import os
+                            # Удаляем файл после отправки
                             os.remove(temp_path)
+                            print(f"Файл удален: {temp_path}")
                             
                         except Exception as e:
                             print(f"Ошибка отправки вложения {filename}: {e}")
@@ -146,6 +192,9 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Помечаем как прочитанное
                 imap.store(mail_id, '+FLAGS', '\\Seen')
                 print(f"Письмо {mail_id} обработано, вложений: {len(attachments) if attachments else 0}")
+            
+            # Очищаем папку attachments (удаляем все оставшиеся файлы)
+            cleanup_attachments_folder("attachments/")
             
             await asyncio.sleep(30)
             
