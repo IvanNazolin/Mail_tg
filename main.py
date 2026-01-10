@@ -62,51 +62,12 @@ def get_email_info(imap, msg_num):
 
     return subject, sender, text_msg.strip()
 
-def get_email_attachments(imap, msg_num, save_dir="attachments"):
-    import os
-    os.makedirs(save_dir, exist_ok=True)
-
-    res, data = imap.fetch(str(msg_num).encode(), '(RFC822)')
-    msg = email.message_from_bytes(data[0][1])
-
-    files = []
-
-    for part in msg.walk():
-        content_disposition = part.get("Content-Disposition")
-
-        if content_disposition and "attachment" in content_disposition:
-            filename, encoding = decode_header(part.get_filename())[0]
-            if isinstance(filename, bytes):
-                filename = filename.decode(encoding or "utf-8", errors="ignore")
-
-            filepath = os.path.join(save_dir, filename)
-
-            with open(filepath, "wb") as f:
-                f.write(part.get_payload(decode=True))
-
-            files.append(filepath)
-
-    return files
-
-subject, sender, text = get_email_info(imap, 1030)
-print(subject)
-print(sender)
-print(text)
-
-attachments = get_email_attachments(imap, 1031)
-print(attachments)
-
-
-async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(f'Hello {update.effective_user.first_name}')
-
 async def send_custom_text(update: Update, context: ContextTypes.DEFAULT_TYPE, custom_text: str):    
     await context.bot.send_message(
         chat_id=Config_chat_id,
         text=custom_text
     )
 
-# Функция отправки разных типов файлов
 async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     # Отправка документа (любого файла)
@@ -116,7 +77,6 @@ async def send_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption="Это документ PDF"
     )
     
-
 app = ApplicationBuilder().token(Config_bot_token).build()
 
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -124,7 +84,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             imap.select("INBOX")
             
-            # Используем правильный формат поиска
             status, data = imap.search(None, 'UNSEEN')
             
             if status != 'OK' or not data[0]:
@@ -132,11 +91,14 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(30)
                 continue
             
-            # Декодируем ID писем
             mail_ids = data[0].decode('utf-8').split()
             
             for mail_id in mail_ids:
+                # Получаем информацию о письме
                 subject, sender, text = get_email_info(imap, mail_id)
+                
+                # Также получаем вложения отдельно
+                attachments = get_email_attachments(imap, mail_id)
                 
                 email_match = re.search(r'<([^>]+)>', sender)
                 if email_match:
@@ -146,25 +108,84 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 clean_text = re.sub(r'<[^>]+>', '', text)
                 
+                # Формируем сообщение
                 message = f"📧 От: {clean_sender}\n"
                 message += f"📌 Тема: {subject}\n\n"
-                message += f"{clean_text[:500]}"
                 
+                if clean_text:
+                    message += f"📝 Текст:\n{clean_text[:500]}"
+                    if len(clean_text) > 500:
+                        message += "..."
+                
+                # Отправляем текстовую часть
                 await send_custom_text(update, context, message)
                 
-                # Важно: используем правильный mail_id
+                # Отправляем вложения если они есть
+                if attachments:
+                    for filename, file_data in attachments:
+                        try:
+                            # Используем временный файл
+                            temp_path = f"temp_{filename}"
+                            with open(temp_path, 'wb') as f:
+                                f.write(file_data)
+                            
+                            await context.bot.send_document(
+                                chat_id=Config_chat_id,
+                                document=open(temp_path, 'rb'),
+                                caption=f"Вложение: {filename}"
+                            )
+                            
+                            # Удаляем временный файл
+                            import os
+                            os.remove(temp_path)
+                            
+                        except Exception as e:
+                            print(f"Ошибка отправки вложения {filename}: {e}")
+                            await send_custom_text(update, context, f"⚠️ Не удалось отправить: {filename}")
+                
+                # Помечаем как прочитанное
                 imap.store(mail_id, '+FLAGS', '\\Seen')
-                print(f"Письмо {mail_id} помечено как прочитанное")
+                print(f"Письмо {mail_id} обработано, вложений: {len(attachments) if attachments else 0}")
             
             await asyncio.sleep(30)
             
         except Exception as e:
             print(f"Ошибка: {e}")
             await asyncio.sleep(30)
-# В хендлере
-app.add_handler(CommandHandler("process", process_and_send))
 
-#app.add_handler(CommandHandler("hello", hello))
-#app.add_handler(CommandHandler("sendfile", send_file))
+def get_email_attachments(imap, msg_num):
+    """Получает вложения из письма"""
+    attachments = []
+    
+    try:
+        res, data = imap.fetch(str(msg_num).encode(), '(RFC822)')
+        msg = email.message_from_bytes(data[0][1])
+        
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_disposition = str(part.get("Content-Disposition"))
+                
+                # Проверяем, является ли часть вложением
+                if "attachment" in content_disposition or "filename" in content_disposition:
+                    filename = part.get_filename()
+                    
+                    if filename:
+                        # Декодируем имя файла
+                        if isinstance(filename, bytes):
+                            filename = filename.decode()
+                        
+                        filename, encoding = decode_header(filename)[0]
+                        if isinstance(filename, bytes):
+                            filename = filename.decode(encoding or 'utf-8', errors='ignore')
+                        
+                        file_data = part.get_payload(decode=True)
+                        if file_data:
+                            attachments.append((filename, file_data))
+    
+    except Exception as e:
+        print(f"Ошибка при получении вложений: {e}")
+    
+    return attachments
+app.add_handler(CommandHandler("process", process_and_send))
 
 app.run_polling()
